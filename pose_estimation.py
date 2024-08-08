@@ -10,7 +10,49 @@ import sys
 from utils import ARUCO_DICT
 import argparse
 import time
+import depthai as dai
 
+def set_up_camera(pipeline):
+    # Define source and output
+    camRgb = pipeline.create(dai.node.ColorCamera)
+    xoutVideo = pipeline.create(dai.node.XLinkOut)
+
+    xoutVideo.setStreamName("video")
+
+    # Properties
+    camRgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
+    camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    camRgb.setVideoSize(1920, 1080)
+
+    xoutVideo.input.setBlocking(False)
+    xoutVideo.input.setQueueSize(1)
+
+    # Linking
+    camRgb.video.link(xoutVideo.input)
+
+def my_estimatePoseSingleMarkers(corners, marker_size, mtx, distortion):
+    '''
+    This will estimate the rvec and tvec for each of the marker corners detected by:
+       corners, ids, rejectedImgPoints = detector.detectMarkers(image)
+    corners - is an array of detected corners for each detected marker in the image
+    marker_size - is the size of the detected markers
+    mtx - is the camera matrix
+    distortion - is the camera distortion matrix
+    RETURN list of rvecs, tvecs, and trash (so that it corresponds to the old estimatePoseSingleMarkers())
+    '''
+    marker_points = np.array([[-marker_size / 2, marker_size / 2, 0],
+                              [marker_size / 2, marker_size / 2, 0],
+                              [marker_size / 2, -marker_size / 2, 0],
+                              [-marker_size / 2, -marker_size / 2, 0]], dtype=np.float32)
+    trash = []
+    rvecs = []
+    tvecs = []
+    for c in corners:
+        nada, R, t = cv2.solvePnP(marker_points, c, mtx, distortion, False, cv2.SOLVEPNP_IPPE_SQUARE)
+        rvecs.append(R)
+        tvecs.append(t)
+        trash.append(nada)
+    return rvecs, tvecs, trash
 
 def pose_esitmation(frame, aruco_dict_type, matrix_coefficients, distortion_coefficients):
 
@@ -24,25 +66,24 @@ def pose_esitmation(frame, aruco_dict_type, matrix_coefficients, distortion_coef
     '''
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    cv2.aruco_dict = cv2.aruco.Dictionary_get(aruco_dict_type)
-    parameters = cv2.aruco.DetectorParameters_create()
+    cv2.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
+    parameters = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.ArucoDetector(cv2.aruco_dict, parameters)
 
 
-    corners, ids, rejected_img_points = cv2.aruco.detectMarkers(gray, cv2.aruco_dict,parameters=parameters,
-        cameraMatrix=matrix_coefficients,
-        distCoeff=distortion_coefficients)
+    corners, ids, rejected_img_points = detector.detectMarkers(gray)
 
-        # If markers are detected
-    if len(corners) > 0:
-        for i in range(0, len(ids)):
-            # Estimate pose of each marker and return the values rvec and tvec---(different from those of camera coefficients)
-            rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.02, matrix_coefficients,
-                                                                       distortion_coefficients)
-            # Draw a square around the markers
-            cv2.aruco.drawDetectedMarkers(frame, corners) 
-
+    # If markers are detected
+    if not ids is None:
+        # Estimate pose of each marker and return the values rvec and tvec---(different from those of camera coefficients)
+        rvec, tvec, markerPoints = my_estimatePoseSingleMarkers(corners, 0.02, matrix_coefficients,
+                                                                    distortion_coefficients)
+        # Draw a square around the markers
+        cv2.aruco.drawDetectedMarkers(frame, corners) 
+        for i in range(len(ids)):
             # Draw Axis
-            cv2.aruco.drawAxis(frame, matrix_coefficients, distortion_coefficients, rvec, tvec, 0.01)  
+            cv2.drawFrameAxes(frame, matrix_coefficients, distortion_coefficients, rvec[i], tvec[i], 0.01)
+            print(f"Marker ID: {ids[i]}, x: {tvec[i][0]}, y: {tvec[i][1]}, z: {tvec[i][2]}")  
 
     return frame
 
@@ -66,22 +107,23 @@ if __name__ == '__main__':
     k = np.load(calibration_matrix_path)
     d = np.load(distortion_coefficients_path)
 
-    video = cv2.VideoCapture(0)
-    time.sleep(2.0)
+    # Create pipeline
+    pipeline = dai.Pipeline()
+    set_up_camera(pipeline)
 
-    while True:
-        ret, frame = video.read()
+    with dai.Device(pipeline) as device:
+        video = device.getOutputQueue(name="video", maxSize=1, blocking=False)
 
-        if not ret:
-            break
-        
-        output = pose_esitmation(frame, aruco_dict_type, k, d)
+        while True:
+            videoIn = video.get()
+            frame = videoIn.getCvFrame()
+            
+            output = pose_esitmation(frame, aruco_dict_type, k, d)
 
-        cv2.imshow('Estimated Pose', output)
+            cv2.imshow('Estimated Pose', output)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
 
-    video.release()
     cv2.destroyAllWindows()
