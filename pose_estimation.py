@@ -3,7 +3,6 @@ Sample Usage:-
 python pose_estimation.py --K_Matrix calibration_matrix.npy --D_Coeff distortion_coefficients.npy --type DICT_5X5_100
 '''
 
-
 import numpy as np
 import cv2
 import sys
@@ -112,6 +111,8 @@ if __name__ == '__main__':
     set_up_camera(pipeline)
 
     with dai.Device(pipeline) as device:
+        if device.getBootloaderVersion() is not None:
+            print('Bootloader version:', device.getBootloaderVersion())
         video = device.getOutputQueue(name="video", maxSize=1, blocking=False)
 
         while True:
